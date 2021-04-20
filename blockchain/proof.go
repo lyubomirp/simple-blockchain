@@ -10,7 +10,7 @@ import (
 	"math/big"
 )
 
-const diff = 15
+const diff = 16
 
 type ProofOfWork struct {
 	Block  *Block
