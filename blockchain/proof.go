@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	"log"
 	"math"
 	"math/big"
 )
@@ -87,15 +86,10 @@ func (pow *ProofOfWork) Validate() bool {
 	return intHash.Cmp(pow.Target) == -1
 }
 
-// ToHex returns the big-endian 8-byte representation of num. It panics if num
-// cannot be written.
+// ToHex returns the big-endian 8-byte representation of num.
 func ToHex(num int64) []byte {
-	buff := new(bytes.Buffer)
-	err := binary.Write(buff, binary.BigEndian, num)
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], uint64(num))
 
-	if err != nil {
-		log.Panic(err)
-	}
-
-	return buff.Bytes()
+	return buf[:]
 }

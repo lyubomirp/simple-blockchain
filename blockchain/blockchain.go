@@ -4,9 +4,9 @@ package blockchain
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
-	"runtime"
 
 	"github.com/dgraph-io/badger"
 )
@@ -18,6 +18,17 @@ const (
 	dbFile = "./tmp/blocks/MANIFEST"
 	// genesis is the note recorded in the genesis block's coinbase transaction.
 	genesis = "First transaction from Genesis"
+)
+
+// Sentinel errors returned by this package. Callers can test for them with
+// errors.Is.
+var (
+	// ErrChainExists is returned when a blockchain already exists on disk.
+	ErrChainExists = errors.New("blockchain already exists")
+	// ErrNoChain is returned when no blockchain exists on disk yet.
+	ErrNoChain = errors.New("no existing blockchain found")
+	// ErrNotEnoughFunds is returned when an address cannot cover a transfer.
+	ErrNotEnoughFunds = errors.New("not enough funds")
 )
 
 // BlockChain is a chain of blocks backed by a Badger database. The zero value
@@ -39,57 +50,61 @@ type BlockChainIterator struct {
 }
 
 // InitBlockChain creates a new blockchain in the local database directory and
-// mines its genesis block, paying the coinbase reward to address. If a chain
-// already exists it prints a message and ends the calling goroutine with
-// runtime.Goexit. It panics on any database error.
-func InitBlockChain(address string) *BlockChain {
-	var lastHash []byte
-
-	_, err := os.Stat(path)
-
+// mines its genesis block, paying the coinbase reward to address. It returns
+// ErrChainExists if a chain is already present.
+func InitBlockChain(address string) (*BlockChain, error) {
 	if DBExists() {
-		fmt.Println("Blackchain already exists")
-		runtime.Goexit()
+		return nil, ErrChainExists
 	}
 
-	if os.IsNotExist(err) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
 		fmt.Printf("Creating %v directory \r\n", path)
-		err := os.MkdirAll(path, os.ModePerm)
 
-		if err != nil {
-			panic(fmt.Sprintf("Cannot create %s directory", path))
+		if err := os.MkdirAll(path, os.ModePerm); err != nil {
+			return nil, fmt.Errorf("create %s directory: %w", path, err)
 		}
 	}
 
-	opts := badger.DefaultOptions(path)
-	opts.Logger = nil
+	db, err := openDB()
+	if err != nil {
+		return nil, err
+	}
 
-	db, err := badger.Open(opts)
-
-	Handle(err)
+	var lastHash []byte
 
 	err = db.Update(func(txn *badger.Txn) error {
-		cbtx := CoinbaseTx(address, genesis)
+		cbtx, err := CoinbaseTx(address, genesis)
+		if err != nil {
+			return err
+		}
+
 		genesisBlock := Genesis(cbtx)
 
 		fmt.Println("Genesis made")
 
-		err := txn.Set(genesisBlock.Hash, genesisBlock.Serialize())
+		data, err := genesisBlock.Serialize()
+		if err != nil {
+			return err
+		}
 
-		Handle(err)
+		if err := txn.Set(genesisBlock.Hash, data); err != nil {
+			return fmt.Errorf("store genesis block: %w", err)
+		}
 
-		err = txn.Set([]byte("lh"), genesisBlock.Hash)
+		if err := txn.Set([]byte("lh"), genesisBlock.Hash); err != nil {
+			return fmt.Errorf("store last hash: %w", err)
+		}
 
 		lastHash = genesisBlock.Hash
 
-		return err
-
+		return nil
 	})
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
 
-	Handle(err)
-
-	blockchain := BlockChain{lastHash, db}
-	return &blockchain
+	return &BlockChain{lastHash, db}, nil
 }
 
 // DBExists reports whether a blockchain database already exists on disk.
@@ -101,71 +116,97 @@ func DBExists() bool {
 }
 
 // ContinueBlockChain opens the existing blockchain database and returns a chain
-// positioned at its last block. The address argument is unused and kept only
-// for symmetry with InitBlockChain. If no chain exists it prints a message and
-// ends the calling goroutine with runtime.Goexit.
-func ContinueBlockChain(address string) *BlockChain {
+// positioned at its last block. It returns ErrNoChain if no chain is present.
+func ContinueBlockChain() (*BlockChain, error) {
 	if !DBExists() {
-		fmt.Println("No existing blockchain found. Create one!")
-		runtime.Goexit()
+		return nil, ErrNoChain
 	}
 
-	var lastHash []byte
+	db, err := openDB()
+	if err != nil {
+		return nil, err
+	}
 
+	lastHash, err := readLastHash(db)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return &BlockChain{lastHash, db}, nil
+}
+
+// openDB opens the Badger database in the local database directory, with
+// Badger's own logging suppressed.
+func openDB() (*badger.DB, error) {
 	opts := badger.DefaultOptions(path)
 	opts.Logger = nil
 
 	db, err := badger.Open(opts)
-	Handle(err)
+	if err != nil {
+		return nil, fmt.Errorf("open database at %s: %w", path, err)
+	}
 
-	err = db.Update(func(tx *badger.Txn) error {
-		item, err := tx.Get([]byte("lh"))
-		Handle(err)
+	return db, nil
+}
 
-		err = item.Value(func(val []byte) error {
-			lastHash = append(lastHash, val...)
-			return nil
-		})
+// readLastHash returns the hash of the chain's newest block.
+func readLastHash(db *badger.DB) ([]byte, error) {
+	var lastHash []byte
 
-		return err
+	err := db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte("lh"))
+		if err != nil {
+			return fmt.Errorf("read last hash: %w", err)
+		}
+
+		lastHash, err = item.ValueCopy(nil)
+		if err != nil {
+			return fmt.Errorf("copy last hash: %w", err)
+		}
+
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	Handle(err)
-
-	chain := BlockChain{lastHash, db}
-
-	return &chain
+	return lastHash, nil
 }
 
 // AddBlock mines a block containing transactions, appends it to the chain and
-// records it as the new last hash. It panics on any database error.
-func (chain *BlockChain) AddBlock(transactions []*Transaction) {
-	var lastHash []byte
-
-	err := chain.Database.View(func(txn *badger.Txn) error {
-		item, err := txn.Get([]byte("lh"))
-		Handle(err)
-
-		err = item.Value(func(val []byte) error {
-			lastHash = append(lastHash, val...)
-			return nil
-		})
-
+// records it as the new last hash.
+func (chain *BlockChain) AddBlock(transactions []*Transaction) error {
+	lastHash, err := readLastHash(chain.Database)
+	if err != nil {
 		return err
-	})
+	}
 
-	Handle(err)
 	newBlock := CreateBlock(transactions, lastHash)
 
-	err = chain.Database.Update(func(txn *badger.Txn) error {
-		err := txn.Set(newBlock.Hash, newBlock.Serialize())
-		Handle(err)
-		err = txn.Set([]byte("lh"), newBlock.Hash)
-		chain.LastHash = newBlock.Hash
+	data, err := newBlock.Serialize()
+	if err != nil {
 		return err
-	})
+	}
 
-	Handle(err)
+	err = chain.Database.Update(func(txn *badger.Txn) error {
+		if err := txn.Set(newBlock.Hash, data); err != nil {
+			return fmt.Errorf("store block: %w", err)
+		}
+
+		if err := txn.Set([]byte("lh"), newBlock.Hash); err != nil {
+			return fmt.Errorf("store last hash: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	chain.LastHash = newBlock.Hash
+
+	return nil
 }
 
 // Iterator returns an iterator positioned at the chain's last block.
@@ -177,35 +218,40 @@ func (chain *BlockChain) Iterator() *BlockChainIterator {
 
 // Next returns the block at the iterator's current position and moves the
 // iterator one block closer to genesis. Callers stop once the returned block
-// has an empty PrevHash; calling Next after that panics.
-func (iter *BlockChainIterator) Next() *Block {
-	var block *Block
+// has an empty PrevHash; calling Next after that returns an error.
+func (iter *BlockChainIterator) Next() (*Block, error) {
+	var encodedBlock []byte
 
 	err := iter.Database.View(func(txn *badger.Txn) error {
-		var encodedBlock []byte
-
 		item, err := txn.Get(iter.CurrentHash)
-		Handle(err)
+		if err != nil {
+			return fmt.Errorf("read block %x: %w", iter.CurrentHash, err)
+		}
 
-		err = item.Value(func(val []byte) error {
-			encodedBlock = append(encodedBlock, val...)
-			return nil
-		})
-		block = Deserialize(encodedBlock)
+		encodedBlock, err = item.ValueCopy(nil)
+		if err != nil {
+			return fmt.Errorf("copy block %x: %w", iter.CurrentHash, err)
+		}
 
-		return err
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	Handle(err)
+	block, err := Deserialize(encodedBlock)
+	if err != nil {
+		return nil, err
+	}
 
 	iter.CurrentHash = block.PrevHash
 
-	return block
+	return block, nil
 }
 
 // FindUnspentTransactions returns the transactions that still hold at least one
 // output unlockable by address.
-func (chain *BlockChain) FindUnspentTransactions(address string) []Transaction {
+func (chain *BlockChain) FindUnspentTransactions(address string) ([]Transaction, error) {
 	var unspent []Transaction
 
 	spent := make(map[string][]int)
@@ -213,7 +259,10 @@ func (chain *BlockChain) FindUnspentTransactions(address string) []Transaction {
 	iter := chain.Iterator()
 
 	for {
-		block := iter.Next()
+		block, err := iter.Next()
+		if err != nil {
+			return nil, err
+		}
 
 		for _, tx := range block.Transactions {
 			txId := hex.EncodeToString(tx.ID)
@@ -248,14 +297,18 @@ func (chain *BlockChain) FindUnspentTransactions(address string) []Transaction {
 		}
 	}
 
-	return unspent
+	return unspent, nil
 }
 
 // FindUTXO returns every unspent transaction output that address can unlock.
 // Summing their values gives the balance of address.
-func (chain *BlockChain) FindUTXO(address string) []TxOutput {
+func (chain *BlockChain) FindUTXO(address string) ([]TxOutput, error) {
 	var Utxos []TxOutput
-	unspent := chain.FindUnspentTransactions(address)
+
+	unspent, err := chain.FindUnspentTransactions(address)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, tx := range unspent {
 		for _, out := range tx.Outputs {
@@ -265,16 +318,21 @@ func (chain *BlockChain) FindUTXO(address string) []TxOutput {
 		}
 	}
 
-	return Utxos
+	return Utxos, nil
 }
 
 // FindSpendableOutputs gathers unspent outputs belonging to address until their
 // total reaches amount. It returns that total, which falls short of amount if
 // address lacks the funds, together with the indexes of the chosen outputs
 // keyed by hex-encoded transaction ID.
-func (chain *BlockChain) FindSpendableOutputs(address string, amount int) (int, map[string][]int) {
+func (chain *BlockChain) FindSpendableOutputs(address string, amount int) (int, map[string][]int, error) {
 	unspentOuts := make(map[string][]int)
-	unspentTxs := chain.FindUnspentTransactions(address)
+
+	unspentTxs, err := chain.FindUnspentTransactions(address)
+	if err != nil {
+		return 0, nil, err
+	}
+
 	accumulated := 0
 
 Work:
@@ -292,5 +350,6 @@ Work:
 			}
 		}
 	}
-	return accumulated, unspentOuts
+
+	return accumulated, unspentOuts, nil
 }

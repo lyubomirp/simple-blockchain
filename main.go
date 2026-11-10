@@ -1,10 +1,10 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"runtime"
 	"strconv"
 
 	"github.com/lyubomirp/simple-blockchain/blockchain"
@@ -21,20 +21,28 @@ func (cli *CommandLine) printUsage() {
 	fmt.Println("printchain - Prints the blocks in the chain")
 }
 
-func (cli *CommandLine) validateArgs() {
-	if len(os.Args) < 2 {
-		cli.printUsage()
-		runtime.Goexit()
+// closeChain closes the chain's database. A failure to close is reported
+// through errp unless an error has already been recorded there.
+func closeChain(chain *blockchain.BlockChain, errp *error) {
+	if err := chain.Database.Close(); err != nil && *errp == nil {
+		*errp = fmt.Errorf("close database: %w", err)
 	}
 }
 
-func (cli *CommandLine) printChain() {
-	chain := blockchain.ContinueBlockChain("")
-	defer chain.Database.Close()
+func (cli *CommandLine) printChain() (err error) {
+	chain, err := blockchain.ContinueBlockChain()
+	if err != nil {
+		return err
+	}
+	defer closeChain(chain, &err)
+
 	iter := chain.Iterator()
 
 	for {
-		block := iter.Next()
+		block, err := iter.Next()
+		if err != nil {
+			return err
+		}
 
 		fmt.Printf("Prev Hash: %x\n", block.PrevHash)
 		fmt.Printf("Hash: %x\n", block.Hash)
@@ -47,43 +55,70 @@ func (cli *CommandLine) printChain() {
 			break
 		}
 	}
+
+	return nil
 }
 
-func (cli *CommandLine) createBlockChain(address string) {
-	chain := blockchain.InitBlockChain(address)
-
-	defer chain.Database.Close()
+func (cli *CommandLine) createBlockChain(address string) (err error) {
+	chain, err := blockchain.InitBlockChain(address)
+	if err != nil {
+		return err
+	}
+	defer closeChain(chain, &err)
 
 	fmt.Println("Finished")
+
+	return nil
 }
 
-func (cli *CommandLine) getBalance(address string) {
-	chain := blockchain.ContinueBlockChain(address)
-	defer chain.Database.Close()
+func (cli *CommandLine) getBalance(address string) (err error) {
+	chain, err := blockchain.ContinueBlockChain()
+	if err != nil {
+		return err
+	}
+	defer closeChain(chain, &err)
+
+	utxos, err := chain.FindUTXO(address)
+	if err != nil {
+		return err
+	}
 
 	balance := 0
-	UTXOs := chain.FindUTXO(address)
-
-	for _, out := range UTXOs {
+	for _, out := range utxos {
 		balance += out.Value
 	}
 
 	fmt.Printf("Balance of %s: %d\n", address, balance)
+
+	return nil
 }
 
-func (cli *CommandLine) send(from, to string, amount int) {
-	chain := blockchain.ContinueBlockChain(from)
+func (cli *CommandLine) send(from, to string, amount int) (err error) {
+	chain, err := blockchain.ContinueBlockChain()
+	if err != nil {
+		return err
+	}
+	defer closeChain(chain, &err)
 
-	defer chain.Database.Close()
+	tx, err := blockchain.NewTransaction(from, to, amount, chain)
+	if err != nil {
+		return err
+	}
 
-	tx := blockchain.NewTransaction(from, to, amount, chain)
-	chain.AddBlock([]*blockchain.Transaction{tx})
+	if err := chain.AddBlock([]*blockchain.Transaction{tx}); err != nil {
+		return err
+	}
 
-	fmt.Printf("Success")
+	fmt.Println("Success")
+
+	return nil
 }
 
-func (cli *CommandLine) run() {
-	cli.validateArgs()
+func (cli *CommandLine) run() error {
+	if len(os.Args) < 2 {
+		cli.printUsage()
+		return errors.New("no command given")
+	}
 
 	getBalanceCmd := flag.NewFlagSet("getbalance", flag.ExitOnError)
 	createBlockchainCmd := flag.NewFlagSet("createblockchain", flag.ExitOnError)
@@ -98,56 +133,64 @@ func (cli *CommandLine) run() {
 
 	switch os.Args[1] {
 	case "getbalance":
-		err := getBalanceCmd.Parse(os.Args[2:])
-		blockchain.Handle(err)
+		if err := getBalanceCmd.Parse(os.Args[2:]); err != nil {
+			return err
+		}
 	case "createblockchain":
-		err := createBlockchainCmd.Parse(os.Args[2:])
-		blockchain.Handle(err)
+		if err := createBlockchainCmd.Parse(os.Args[2:]); err != nil {
+			return err
+		}
 	case "printChain":
-		err := printChainCmd.Parse(os.Args[2:])
-		blockchain.Handle(err)
+		if err := printChainCmd.Parse(os.Args[2:]); err != nil {
+			return err
+		}
 	case "send":
-		err := sendCmd.Parse(os.Args[2:])
-		blockchain.Handle(err)
+		if err := sendCmd.Parse(os.Args[2:]); err != nil {
+			return err
+		}
 	default:
-		cli.printChain()
-		runtime.Goexit()
+		return cli.printChain()
 	}
 
 	if getBalanceCmd.Parsed() {
 		if *getBalanceAddress == "" {
 			getBalanceCmd.Usage()
-			runtime.Goexit()
+			return errors.New("getbalance: -address is required")
 		}
 
-		cli.getBalance(*getBalanceAddress)
+		return cli.getBalance(*getBalanceAddress)
 	}
 
 	if createBlockchainCmd.Parsed() {
 		if *createBlockChainAddress == "" {
 			createBlockchainCmd.Usage()
-			runtime.Goexit()
+			return errors.New("createblockchain: -address is required")
 		}
 
-		cli.createBlockChain(*createBlockChainAddress)
+		return cli.createBlockChain(*createBlockChainAddress)
 	}
 
 	if sendCmd.Parsed() {
 		if *sendFrom == "" || *sendTo == "" || *sendAmount == 0 {
 			createBlockchainCmd.Usage()
-			runtime.Goexit()
+			return errors.New("send: -from, -to and -amount are required")
 		}
 
-		cli.send(*sendFrom, *sendTo, *sendAmount)
+		return cli.send(*sendFrom, *sendTo, *sendAmount)
 	}
 
 	if printChainCmd.Parsed() {
-		cli.printChain()
+		return cli.printChain()
 	}
+
+	return nil
 }
 
 func main() {
-	defer os.Exit(0)
 	cli := CommandLine{}
-	cli.run()
+
+	if err := cli.run(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 }

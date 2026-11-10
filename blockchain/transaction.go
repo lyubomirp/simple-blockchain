@@ -6,7 +6,6 @@ import (
 	"encoding/gob"
 	"encoding/hex"
 	"fmt"
-	"log"
 )
 
 // Transaction moves token value from its Inputs, which reference outputs of
@@ -42,7 +41,7 @@ type TxInput struct {
 // CoinbaseTx returns a transaction that mints the mining reward to the address
 // to. It has no real input; data records an arbitrary note and defaults to a
 // message naming the recipient.
-func CoinbaseTx(to, data string) *Transaction {
+func CoinbaseTx(to, data string) (*Transaction, error) {
 	if data == "" {
 		data = fmt.Sprintf("Counts to %s", to)
 	}
@@ -52,25 +51,25 @@ func CoinbaseTx(to, data string) *Transaction {
 
 	tx := Transaction{nil, []TxInput{txin}, []TxOutput{txout}}
 
-	tx.SetID()
+	if err := tx.SetID(); err != nil {
+		return nil, err
+	}
 
-	return &tx
+	return &tx, nil
 }
 
-// SetID computes the transaction's ID as the hash of its gob encoding. It
-// panics if the transaction cannot be encoded.
-func (tx *Transaction) SetID() {
+// SetID computes the transaction's ID as the hash of its gob encoding.
+func (tx *Transaction) SetID() error {
 	var encoded bytes.Buffer
-	var hash [32]byte
 
-	encode := gob.NewEncoder(&encoded)
-	err := encode.Encode(tx)
+	if err := gob.NewEncoder(&encoded).Encode(tx); err != nil {
+		return fmt.Errorf("encode transaction: %w", err)
+	}
 
-	Handle(err)
-
-	hash = sha256.Sum256(encoded.Bytes())
-
+	hash := sha256.Sum256(encoded.Bytes())
 	tx.ID = hash[:]
+
+	return nil
 }
 
 // IsCoinbase reports whether tx mints new tokens instead of spending existing
@@ -92,25 +91,30 @@ func (out *TxOutput) CanBeUnlocked(data string) bool {
 
 // NewTransaction builds a transaction sending amount from one address to
 // another, drawing on chain for spendable outputs and returning any remainder
-// to the sender as change. It panics if from does not hold enough funds.
-func NewTransaction(from, to string, amount int, chain *BlockChain) *Transaction {
+// to the sender as change. It returns an error wrapping ErrNotEnoughFunds if
+// from cannot cover amount.
+func NewTransaction(from, to string, amount int, chain *BlockChain) (*Transaction, error) {
 	var txIn []TxInput
 	var txOut []TxOutput
 
-	acc, validOutputs := chain.FindSpendableOutputs(from, amount)
+	acc, validOutputs, err := chain.FindSpendableOutputs(from, amount)
+	if err != nil {
+		return nil, err
+	}
 
 	if acc < amount {
-		log.Panic("Error: not enough funds")
+		return nil, fmt.Errorf("%s holds %d of the %d required: %w", from, acc, amount, ErrNotEnoughFunds)
 	}
 
 	for txid, outs := range validOutputs {
 		txID, err := hex.DecodeString(txid)
-		Handle(err)
+		if err != nil {
+			return nil, fmt.Errorf("decode transaction ID %q: %w", txid, err)
+		}
 
 		for _, out := range outs {
 			input := TxInput{txID, out, from}
 			txIn = append(txIn, input)
-
 		}
 	}
 
@@ -121,7 +125,9 @@ func NewTransaction(from, to string, amount int, chain *BlockChain) *Transaction
 	}
 
 	tx := Transaction{nil, txIn, txOut}
-	tx.SetID()
+	if err := tx.SetID(); err != nil {
+		return nil, err
+	}
 
-	return &tx
+	return &tx, nil
 }

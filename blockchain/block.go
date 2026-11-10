@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/gob"
-	"log"
+	"fmt"
 )
 
 // Block is a single block in the chain. Its Hash commits to PrevHash, to the
@@ -36,39 +36,26 @@ func Genesis(coinbase *Transaction) *Block {
 	return CreateBlock([]*Transaction{coinbase}, []byte{})
 }
 
-// Serialize encodes b as gob for storage in the database. It panics if the
-// block cannot be encoded.
-func (b *Block) Serialize() []byte {
+// Serialize encodes b as gob for storage in the database.
+func (b *Block) Serialize() ([]byte, error) {
 	var res bytes.Buffer
-	encoder := gob.NewEncoder(&res)
 
-	err := encoder.Encode(b)
-
-	Handle(err)
-
-	return res.Bytes()
-
-}
-
-// Deserialize decodes a block previously encoded by Block.Serialize. It panics
-// if data is not a valid gob-encoded block.
-func Deserialize(data []byte) *Block {
-	var block Block
-	decoder := gob.NewDecoder(bytes.NewReader(data))
-
-	err := decoder.Decode(&block)
-
-	Handle(err)
-
-	return &block
-}
-
-// Handle panics if err is non-nil. The package uses it in place of returning
-// errors to the caller.
-func Handle(err error) {
-	if err != nil {
-		log.Panic(err)
+	if err := gob.NewEncoder(&res).Encode(b); err != nil {
+		return nil, fmt.Errorf("encode block: %w", err)
 	}
+
+	return res.Bytes(), nil
+}
+
+// Deserialize decodes a block previously encoded by Block.Serialize.
+func Deserialize(data []byte) (*Block, error) {
+	var block Block
+
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&block); err != nil {
+		return nil, fmt.Errorf("decode block: %w", err)
+	}
+
+	return &block, nil
 }
 
 // HashTransactions returns a SHA-256 hash over the IDs of the block's
