@@ -97,6 +97,10 @@ func NewTransaction(from, to string, amount int, chain *BlockChain) (*Transactio
 	var txIn []TxInput
 	var txOut []TxOutput
 
+	if amount <= 0 {
+		return nil, fmt.Errorf("amount must be positive, got %d", amount)
+	}
+
 	acc, validOutputs, err := chain.FindSpendableOutputs(from, amount)
 	if err != nil {
 		return nil, err

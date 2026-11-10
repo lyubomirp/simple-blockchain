@@ -140,7 +140,7 @@ func (cli *CommandLine) run() error {
 		if err := createBlockchainCmd.Parse(os.Args[2:]); err != nil {
 			return err
 		}
-	case "printChain":
+	case "printchain":
 		if err := printChainCmd.Parse(os.Args[2:]); err != nil {
 			return err
 		}
@@ -149,7 +149,8 @@ func (cli *CommandLine) run() error {
 			return err
 		}
 	default:
-		return cli.printChain()
+		cli.printUsage()
+		return fmt.Errorf("unknown command %q", os.Args[1])
 	}
 
 	if getBalanceCmd.Parsed() {
@@ -171,9 +172,14 @@ func (cli *CommandLine) run() error {
 	}
 
 	if sendCmd.Parsed() {
-		if *sendFrom == "" || *sendTo == "" || *sendAmount == 0 {
-			createBlockchainCmd.Usage()
-			return errors.New("send: -from, -to and -amount are required")
+		if *sendFrom == "" || *sendTo == "" {
+			sendCmd.Usage()
+			return errors.New("send: -from and -to are required")
+		}
+
+		if *sendAmount <= 0 {
+			sendCmd.Usage()
+			return fmt.Errorf("send: -amount must be positive, got %d", *sendAmount)
 		}
 
 		return cli.send(*sendFrom, *sendTo, *sendAmount)
