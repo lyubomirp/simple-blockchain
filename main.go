@@ -10,6 +10,7 @@ import (
 	"github.com/lyubomirp/simple-blockchain/blockchain"
 )
 
+// CommandLine dispatches the command-line subcommands and owns no state.
 type CommandLine struct{}
 
 func (cli *CommandLine) printUsage() {

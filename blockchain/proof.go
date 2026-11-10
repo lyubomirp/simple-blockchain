@@ -10,13 +10,19 @@ import (
 	"math/big"
 )
 
+// diff is the mining difficulty: the number of leading zero bits a block hash
+// must have to be accepted.
 const diff = 16
 
+// ProofOfWork pairs a block with the target value its hash must fall below for
+// the block to count as mined.
 type ProofOfWork struct {
 	Block  *Block
 	Target *big.Int
 }
 
+// NewProof returns the proof of work for b, with a target derived from the
+// package difficulty.
 func NewProof(b *Block) *ProofOfWork {
 	target := big.NewInt(1)
 	target.Lsh(target, uint(256-diff))
@@ -26,6 +32,8 @@ func NewProof(b *Block) *ProofOfWork {
 	return pow
 }
 
+// InitData returns the bytes hashed for the given nonce: the previous hash, the
+// block's transaction hash, the nonce and the difficulty.
 func (pow *ProofOfWork) InitData(nonce int) []byte {
 	data := bytes.Join(
 		[][]byte{
@@ -40,6 +48,9 @@ func (pow *ProofOfWork) InitData(nonce int) []byte {
 	return data
 }
 
+// Run searches for a nonce whose hash falls below the target and returns that
+// nonce with the hash it produced. It prints every candidate hash to standard
+// output as it searches.
 func (pow *ProofOfWork) Run() (int, []byte) {
 	var intHash big.Int
 	var hash [32]byte
@@ -64,6 +75,8 @@ func (pow *ProofOfWork) Run() (int, []byte) {
 	return nonce, hash[:]
 }
 
+// Validate reports whether the nonce recorded on the block really does hash
+// below the target.
 func (pow *ProofOfWork) Validate() bool {
 	var intHash big.Int
 
@@ -74,6 +87,8 @@ func (pow *ProofOfWork) Validate() bool {
 	return intHash.Cmp(pow.Target) == -1
 }
 
+// ToHex returns the big-endian 8-byte representation of num. It panics if num
+// cannot be written.
 func ToHex(num int64) []byte {
 	buff := new(bytes.Buffer)
 	err := binary.Write(buff, binary.BigEndian, num)
