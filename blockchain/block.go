@@ -19,7 +19,11 @@ type Block struct {
 // CreateBlock assembles a block holding txs on top of prevHash and runs proof
 // of work to find its nonce and hash. It blocks until the work is done.
 func CreateBlock(txs []*Transaction, prevHash []byte) *Block {
-	block := &Block{[]byte{}, txs, prevHash, 0}
+	block := &Block{
+		Hash:         []byte{},
+		Transactions: txs,
+		PrevHash:     prevHash,
+	}
 
 	pow := NewProof(block)
 	nonce, hash := pow.Run()

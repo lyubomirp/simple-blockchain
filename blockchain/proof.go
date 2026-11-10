@@ -26,7 +26,7 @@ func NewProof(b *Block) *ProofOfWork {
 	target := big.NewInt(1)
 	target.Lsh(target, uint(256-diff))
 
-	pow := &ProofOfWork{b, target}
+	pow := &ProofOfWork{Block: b, Target: target}
 
 	return pow
 }

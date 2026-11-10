@@ -46,10 +46,10 @@ func CoinbaseTx(to, data string) (*Transaction, error) {
 		data = fmt.Sprintf("Counts to %s", to)
 	}
 
-	txin := TxInput{[]byte{}, -1, data}
-	txout := TxOutput{100, to}
+	txin := TxInput{ID: []byte{}, Out: -1, Sig: data}
+	txout := TxOutput{Value: 100, PubKey: to}
 
-	tx := Transaction{nil, []TxInput{txin}, []TxOutput{txout}}
+	tx := Transaction{Inputs: []TxInput{txin}, Outputs: []TxOutput{txout}}
 
 	if err := tx.SetID(); err != nil {
 		return nil, err
@@ -113,18 +113,18 @@ func NewTransaction(from, to string, amount int, chain *BlockChain) (*Transactio
 		}
 
 		for _, out := range outs {
-			input := TxInput{txID, out, from}
+			input := TxInput{ID: txID, Out: out, Sig: from}
 			txIn = append(txIn, input)
 		}
 	}
 
-	txOut = append(txOut, TxOutput{amount, to})
+	txOut = append(txOut, TxOutput{Value: amount, PubKey: to})
 
 	if acc > amount {
-		txOut = append(txOut, TxOutput{acc - amount, from})
+		txOut = append(txOut, TxOutput{Value: acc - amount, PubKey: from})
 	}
 
-	tx := Transaction{nil, txIn, txOut}
+	tx := Transaction{Inputs: txIn, Outputs: txOut}
 	if err := tx.SetID(); err != nil {
 		return nil, err
 	}

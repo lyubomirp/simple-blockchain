@@ -104,7 +104,7 @@ func InitBlockChain(address string) (*BlockChain, error) {
 		return nil, err
 	}
 
-	return &BlockChain{lastHash, db}, nil
+	return &BlockChain{LastHash: lastHash, Database: db}, nil
 }
 
 // DBExists reports whether a blockchain database already exists on disk.
@@ -133,7 +133,7 @@ func ContinueBlockChain() (*BlockChain, error) {
 		return nil, err
 	}
 
-	return &BlockChain{lastHash, db}, nil
+	return &BlockChain{LastHash: lastHash, Database: db}, nil
 }
 
 // openDB opens the Badger database in the local database directory, with
@@ -211,7 +211,7 @@ func (chain *BlockChain) AddBlock(transactions []*Transaction) error {
 
 // Iterator returns an iterator positioned at the chain's last block.
 func (chain *BlockChain) Iterator() *BlockChainIterator {
-	iter := &BlockChainIterator{chain.LastHash, chain.Database}
+	iter := &BlockChainIterator{CurrentHash: chain.LastHash, Database: chain.Database}
 
 	return iter
 }
