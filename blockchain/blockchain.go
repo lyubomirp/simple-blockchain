@@ -249,11 +249,28 @@ func (iter *BlockChainIterator) Next() (*Block, error) {
 	return block, nil
 }
 
-// FindUnspentTransactions returns the transactions that still hold at least one
-// output unlockable by address.
-func (chain *BlockChain) FindUnspentTransactions(address string) ([]Transaction, error) {
-	var unspent []Transaction
+// UnspentOutput is a transaction output that has not been spent, paired with
+// the location that lets a later transaction reference it as an input.
+type UnspentOutput struct {
+	// TxID is the ID of the transaction holding the output.
+	TxID []byte
+	// Index is the position of the output within that transaction.
+	Index int
+	// Output is the output itself.
+	Output TxOutput
+}
 
+// FindUnspentOutputs returns every unspent transaction output that address can
+// unlock, newest first.
+//
+// It walks the chain backwards, so the input that spends an output is always
+// seen before the output itself. Outputs recorded as spent along the way are
+// skipped.
+func (chain *BlockChain) FindUnspentOutputs(address string) ([]UnspentOutput, error) {
+	var unspent []UnspentOutput
+
+	// spent maps a hex-encoded transaction ID to the indexes of its outputs
+	// that address has already spent.
 	spent := make(map[string][]int)
 
 	iter := chain.Iterator()
@@ -265,29 +282,33 @@ func (chain *BlockChain) FindUnspentTransactions(address string) ([]Transaction,
 		}
 
 		for _, tx := range block.Transactions {
-			txId := hex.EncodeToString(tx.ID)
+			txID := hex.EncodeToString(tx.ID)
 
 		Outputs:
 			for outIdx, out := range tx.Outputs {
-				if spent[txId] != nil {
-					for _, spentOut := range spent[txId] {
-						if spentOut == outIdx {
-							continue Outputs
-						}
+				for _, spentOut := range spent[txID] {
+					if spentOut == outIdx {
+						continue Outputs
 					}
 				}
 
 				if out.CanBeUnlocked(address) {
-					unspent = append(unspent, *tx)
+					unspent = append(unspent, UnspentOutput{
+						TxID:   tx.ID,
+						Index:  outIdx,
+						Output: out,
+					})
 				}
 			}
 
-			if !tx.IsCoinbase() {
-				for _, in := range tx.Inputs {
-					if in.CanUnlock(address) {
-						inTxIdx := hex.EncodeToString(in.ID)
-						spent[inTxIdx] = append(spent[txId], in.Out)
-					}
+			if tx.IsCoinbase() {
+				continue
+			}
+
+			for _, in := range tx.Inputs {
+				if in.CanUnlock(address) {
+					inTxID := hex.EncodeToString(in.ID)
+					spent[inTxID] = append(spent[inTxID], in.Out)
 				}
 			}
 		}
@@ -303,22 +324,17 @@ func (chain *BlockChain) FindUnspentTransactions(address string) ([]Transaction,
 // FindUTXO returns every unspent transaction output that address can unlock.
 // Summing their values gives the balance of address.
 func (chain *BlockChain) FindUTXO(address string) ([]TxOutput, error) {
-	var Utxos []TxOutput
-
-	unspent, err := chain.FindUnspentTransactions(address)
+	unspent, err := chain.FindUnspentOutputs(address)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, tx := range unspent {
-		for _, out := range tx.Outputs {
-			if out.CanBeUnlocked(address) {
-				Utxos = append(Utxos, out)
-			}
-		}
+	utxos := make([]TxOutput, 0, len(unspent))
+	for _, u := range unspent {
+		utxos = append(utxos, u.Output)
 	}
 
-	return Utxos, nil
+	return utxos, nil
 }
 
 // FindSpendableOutputs gathers unspent outputs belonging to address until their
@@ -326,29 +342,22 @@ func (chain *BlockChain) FindUTXO(address string) ([]TxOutput, error) {
 // address lacks the funds, together with the indexes of the chosen outputs
 // keyed by hex-encoded transaction ID.
 func (chain *BlockChain) FindSpendableOutputs(address string, amount int) (int, map[string][]int, error) {
-	unspentOuts := make(map[string][]int)
-
-	unspentTxs, err := chain.FindUnspentTransactions(address)
+	unspent, err := chain.FindUnspentOutputs(address)
 	if err != nil {
 		return 0, nil, err
 	}
 
+	unspentOuts := make(map[string][]int)
 	accumulated := 0
 
-Work:
-	for _, tx := range unspentTxs {
-		txId := hex.EncodeToString(tx.ID)
-
-		for outIdx, out := range tx.Outputs {
-			if out.CanBeUnlocked(address) && accumulated < amount {
-				accumulated += out.Value
-				unspentOuts[txId] = append(unspentOuts[txId], outIdx)
-			}
-
-			if accumulated >= amount {
-				break Work
-			}
+	for _, u := range unspent {
+		if accumulated >= amount {
+			break
 		}
+
+		txID := hex.EncodeToString(u.TxID)
+		unspentOuts[txID] = append(unspentOuts[txID], u.Index)
+		accumulated += u.Output.Value
 	}
 
 	return accumulated, unspentOuts, nil
